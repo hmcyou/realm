@@ -2,11 +2,12 @@ use std::fmt::{Formatter, Display};
 use serde::{Serialize, Deserialize};
 use log::LevelFilter;
 use super::Config;
-use crate::utils::DEFAULT_LOG_FILE;
+use crate::consts::DEFAULT_LOG_FILE;
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum LogLevel {
+    #[default]
     Off,
     Error,
     Warn,
@@ -41,12 +42,6 @@ impl From<LogLevel> for LevelFilter {
             Debug => LevelFilter::Debug,
             Trace => LevelFilter::Trace,
         }
-    }
-}
-
-impl Default for LogLevel {
-    fn default() -> Self {
-        LogLevel::Off
     }
 }
 
@@ -94,9 +89,8 @@ impl Config for LogConf {
             "stdout" => io::stdout().into(),
             "stderr" => io::stderr().into(),
             output => OpenOptions::new()
-                .write(true)
-                .create(true)
                 .append(true)
+                .create(true)
                 .open(output)
                 .unwrap_or_else(|e| panic!("failed to open {}: {}", output, &e))
                 .into(),
@@ -124,9 +118,9 @@ impl Config for LogConf {
     }
 
     fn from_cmd_args(matches: &clap::ArgMatches) -> Self {
-        let level = matches.value_of("log_level").map(|x| String::from(x).into());
+        let level = matches.get_one::<String>("log_level").cloned().map(LogLevel::from);
 
-        let output = matches.value_of("log_output").map(String::from);
+        let output = matches.get_one("log_output").cloned();
 
         Self { level, output }
     }

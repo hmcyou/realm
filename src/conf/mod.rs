@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{Result, Error, ErrorKind};
 
+use walkdir::WalkDir;
 use clap::ArgMatches;
 use serde::{Serialize, Deserialize};
 
@@ -11,21 +12,21 @@ mod dns;
 pub use dns::{DnsMode, DnsProtocol, DnsConf};
 
 mod net;
-pub use net::NetConf;
+pub use net::{NetConf, NetInfo};
 
 mod endpoint;
-pub use endpoint::EndpointConf;
+pub use endpoint::{EndpointConf, EndpointInfo};
 
 mod legacy;
 pub use legacy::LegacyConf;
 
+#[allow(clippy::too_long_first_doc_paragraph)]
 /// Conig Architecture
 /// cmd | file => LogConf => { level, output }
 /// cmd | file => DnsConf => { resolve cinfig, opts }
 /// cmd | file => NetConf
 ///                      \
 /// cmd | file => EndpointConf => { [local, remote, conn_opts] }
-
 pub trait Config {
     type Output;
 
@@ -34,11 +35,11 @@ pub trait Config {
     fn build(self) -> Self::Output;
 
     // override self if other not empty
-    // usage: cmd argument overrides global and local option
+    // e.g.: cmd argument overrides global and local option
     fn rst_field(&mut self, other: &Self) -> &mut Self;
 
     // take other only if self empty & other not empty
-    // usage: local field takes global option
+    // e.g.: local field takes global option
     fn take_field(&mut self, other: &Self) -> &mut Self;
 
     fn from_cmd_args(matches: &ArgMatches) -> Self;
@@ -80,11 +81,33 @@ impl FullConf {
     }
 
     pub fn from_conf_file(file: &str) -> Self {
-        let conf = fs::read_to_string(file).unwrap_or_else(|e| panic!("unable to open {}: {}", file, &e));
-        match Self::from_conf_str(&conf) {
-            Ok(x) => x,
-            Err(e) => panic!("failed to parse {}: {}", file, &e),
+        let mtd = fs::metadata(file).unwrap_or_else(|e| panic!("failed to open {}: {}", file, e));
+
+        if mtd.is_file() {
+            let conf = fs::read_to_string(file).unwrap_or_else(|e| panic!("failed to open {}: {}", file, e));
+            match Self::from_conf_str(&conf) {
+                Ok(x) => return x,
+                Err(e) => panic!("failed to parse {}: {}", file, &e),
+            }
         }
+
+        let mut full_conf = FullConf::default();
+        for entry in WalkDir::new(file)
+            .follow_links(true)
+            .into_iter()
+            .filter_entry(|e| e.file_name().to_str().is_some_and(|x| !x.starts_with('.')))
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| e.path().extension().is_some_and(|s| s == "toml" || s == "json"))
+        {
+            let conf_part = fs::read_to_string(entry.path())
+                .unwrap_or_else(|e| panic!("failed to open {}: {}", entry.path().to_string_lossy(), e));
+
+            let conf_part = Self::from_conf_str(&conf_part)
+                .unwrap_or_else(|e| panic!("failed to parse {}: {}", entry.path().to_string_lossy(), e));
+            full_conf.take_fields(conf_part);
+        }
+        full_conf
     }
 
     pub fn from_conf_str(s: &str) -> Result<Self> {
@@ -114,6 +137,13 @@ impl FullConf {
                 toml_err, json_err, legacy_err
             ),
         ))
+    }
+
+    fn take_fields(&mut self, other: Self) {
+        self.log.take_field(&other.log);
+        self.dns.take_field(&other.dns);
+        self.network.take_field(&other.network);
+        self.endpoints.extend(other.endpoints);
     }
 
     pub fn add_endpoint(&mut self, endpoint: EndpointConf) -> &mut Self {
@@ -170,7 +200,7 @@ macro_rules! take {
 
 #[macro_export]
 macro_rules! empty {
-    ( $this:expr => $( $field: ident ),* ) => {{
+    ( $this: expr => $( $field: ident ),* ) => {{
         let mut res = true;
         $(
             res = res && $this.$field.is_none();

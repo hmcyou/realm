@@ -1,16 +1,22 @@
+#![allow(static_mut_refs)]
+
 //! Global dns resolver.
 
 use std::io::{Result, Error, ErrorKind};
 use std::net::SocketAddr;
-use std::sync::Mutex;
 
-use trust_dns_resolver as resolver;
+use hickory_resolver as resolver;
 use resolver::TokioAsyncResolver;
-use resolver::config::{ResolverConfig, ResolverOpts};
 use resolver::system_conf::read_system_conf;
 use resolver::lookup_ip::{LookupIp, LookupIpIter};
+pub use resolver::config;
+use config::{ResolverOpts, ResolverConfig};
 
-use lazy_static::lazy_static;
+#[cfg(not(feature = "multi-thread"))]
+use once_cell::unsync::{OnceCell, Lazy};
+
+#[cfg(feature = "multi-thread")]
+use once_cell::{unsync::OnceCell, sync::Lazy};
 
 use crate::endpoint::RemoteAddr;
 
@@ -26,7 +32,7 @@ pub struct DnsConf {
 impl Default for DnsConf {
     fn default() -> Self {
         #[cfg(any(all(unix, not(target_os = "android")), windows))]
-        let (conf, opts) = read_system_conf().unwrap();
+        let (conf, opts) = read_system_conf().unwrap_or_default();
 
         #[cfg(not(any(all(unix, not(target_os = "android")), windows)))]
         let (conf, opts) = Default::default();
@@ -35,48 +41,52 @@ impl Default for DnsConf {
     }
 }
 
-impl DnsConf {
-    /// Set resolver config.
-    pub fn set_conf(&mut self, conf: ResolverConfig) {
-        self.conf = conf;
-    }
+static mut DNS_CONF: OnceCell<DnsConf> = OnceCell::new();
 
-    /// Set resolver options.
-    pub fn set_opts(&mut self, opts: ResolverOpts) {
-        self.opts = opts;
+static mut DNS: Lazy<TokioAsyncResolver> = Lazy::new(|| {
+    let DnsConf { conf, opts } = unsafe { DNS_CONF.take().unwrap() };
+    TokioAsyncResolver::tokio(conf, opts)
+});
+
+/// Force initialization.
+pub fn force_init() {
+    use std::ptr;
+    unsafe {
+        Lazy::force(&*ptr::addr_of!(DNS));
     }
 }
 
-lazy_static! {
-    static ref DNS_CONF: Mutex<DnsConf> = Mutex::new(DnsConf::default());
-    static ref DNS: TokioAsyncResolver = {
-        let DnsConf { conf, opts } = DNS_CONF.lock().unwrap().clone();
-        TokioAsyncResolver::tokio(conf, opts).unwrap()
-    };
+/// Setup global dns resolver. This is not thread-safe!
+pub fn build(conf: Option<ResolverConfig>, opts: Option<ResolverOpts>) {
+    build_lazy(conf, opts);
+    force_init();
 }
 
-/// Configure global dns resolver.
-pub fn configure(conf: Option<ResolverConfig>, opts: Option<ResolverOpts>) {
-    lazy_static::initialize(&DNS_CONF);
+/// Setup config of global dns resolver, without initialization.
+/// This is not thread-safe!
+pub fn build_lazy(conf: Option<ResolverConfig>, opts: Option<ResolverOpts>) {
+    let mut dns_conf = DnsConf::default();
 
     if let Some(conf) = conf {
-        DNS_CONF.lock().unwrap().set_conf(conf);
+        dns_conf.conf = conf;
     }
-    if let Some(opts) = opts {
-        DNS_CONF.lock().unwrap().set_opts(opts);
-    }
-}
 
-/// Setup global dns resolver.
-pub fn build() {
-    lazy_static::initialize(&DNS);
+    if let Some(opts) = opts {
+        dns_conf.opts = opts;
+    }
+
+    unsafe {
+        DNS_CONF.set(dns_conf).unwrap();
+    }
 }
 
 /// Lookup ip with global dns resolver.
 pub async fn resolve_ip(ip: &str) -> Result<LookupIp> {
-    DNS.lookup_ip(ip)
-        .await
-        .map_or_else(|e| Err(Error::new(ErrorKind::Other, e)), Ok)
+    unsafe {
+        DNS.lookup_ip(ip)
+            .await
+            .map_or_else(|e| Err(Error::new(ErrorKind::Other, e)), Ok)
+    }
 }
 
 /// Lookup socketaddr with global dns resolver.

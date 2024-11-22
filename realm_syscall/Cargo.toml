@@ -1,9 +1,9 @@
 [package]
 name = "realm_syscall"
-version = "0.1.4"
+version = "0.1.8"
 authors = ["zephyr <i@zephyr.moe>"]
 description = "Realm's convenient syscall collections."
-repository = "https://github.com/zhboner/realm/realm_syscall"
+repository = "https://github.com/zhboner/realm"
 readme = "README.md"
 documentation = "https://docs.rs/realm_syscall"
 keywords = ["network", "syscall"]
@@ -12,7 +12,7 @@ license = "MIT"
 
 [dependencies]
 libc = "0.2"
-socket2 = "0.4"
+socket2 = "0.5"
 
 [target.'cfg(unix)'.dependencies]
-daemonize = "0.4"
+daemonize = "0.5"

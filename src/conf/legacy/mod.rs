@@ -66,15 +66,18 @@ impl From<LegacyConf> for FullConf {
 
         let endpoints = listen
             .into_iter()
-            .zip(remote.into_iter())
+            .zip(remote)
             .map(|(listen, remote)| EndpointConf {
                 listen,
                 remote,
                 through: None,
                 interface: None,
+                listen_interface: None,
                 listen_transport: None,
                 remote_transport: None,
                 network: Default::default(),
+                extra_remotes: Vec::new(),
+                balance: None,
             })
             .collect();
 

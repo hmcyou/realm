@@ -1,6 +1,6 @@
-use std::io::{Result, ErrorKind};
-use std::task::{Context, Poll, ready};
+use std::io::{ErrorKind, Result};
 use std::marker::PhantomData;
+use std::task::{ready, Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -10,6 +10,7 @@ pub struct CopyBuffer<B, SR, SW> {
     pub(crate) need_flush: bool,
     pub(crate) pos: usize,
     pub(crate) cap: usize,
+    pub(crate) amt: u64,
     pub(crate) buf: B,
     _marker: PhantomData<SR>,
     __marker: PhantomData<SW>,
@@ -23,6 +24,7 @@ impl<B, SR, SW> CopyBuffer<B, SR, SW> {
             need_flush: false,
             pos: 0,
             cap: 0,
+            amt: 0,
             buf,
             _marker: PhantomData,
             __marker: PhantomData,
@@ -55,8 +57,7 @@ where
         cx: &mut Context<'_>,
         r: &mut <CopyBuffer<B, SR, SW> as AsyncIOBuf>::StreamR,
         w: &mut <CopyBuffer<B, SR, SW> as AsyncIOBuf>::StreamW,
-        amt: &mut u64,
-    ) -> Poll<Result<()>> {
+    ) -> Poll<Result<u64>> {
         loop {
             // If our buffer is empty, then we need to read some data to
             // continue.
@@ -95,7 +96,7 @@ where
                     return Poll::Ready(Err(ErrorKind::WriteZero.into()));
                 } else {
                     self.pos += i;
-                    *amt += i as u64;
+                    self.amt += i as u64;
                     self.need_flush = true;
                 }
             }
@@ -109,7 +110,7 @@ where
             // data and finish the transfer.
             if self.pos == self.cap && self.read_done {
                 ready!(self.poll_flush_buf(cx, w))?;
-                return Poll::Ready(Ok(()));
+                return Poll::Ready(Ok(self.amt));
             }
         }
     }
